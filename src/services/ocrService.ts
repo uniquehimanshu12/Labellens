@@ -1,5 +1,4 @@
 import {
-  const API_BASE_URL = 'https://labellens-api-bm1o.onrender.com';
   ExtractedField,
   PackageImages,
   ImageQualityWarning,
@@ -12,6 +11,9 @@ import {
   UploadedImageRecord,
   RawAnalysisDebugInfo,
   OtherDetectedInfo,
+} from '../types';
+
+const API_BASE_URL = 'https://labellens-api-bm1o.onrender.com';
 } from '../types';
 
 export interface ExtractionResult {
