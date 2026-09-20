@@ -1,4 +1,5 @@
 import express from "express";
+import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
 import { createServer as createViteServer } from "vite";
@@ -11,6 +12,19 @@ const currentDirPath = process.cwd();
 async function startServer() {
   const app = express();
   const PORT = 3000;
+
+  // CORS — allow the deployed Vercel frontend and local development
+  app.use(
+    cors({
+      origin: [
+        "https://labellens-rouge.vercel.app",
+        "http://localhost:5173",
+        "http://localhost:5174",
+      ],
+      methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+      allowedHeaders: ["Content-Type", "Authorization"],
+    })
+  );
 
   // Increase payload limit for base64 captured package images
   app.use(express.json({ limit: "35mb" }));
