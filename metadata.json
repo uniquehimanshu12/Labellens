@@ -1,0 +1,11 @@
+{
+  "name": "LabelLens",
+  "description": "Evidence-based packaged commodity inspection tool for field inspectors (SIH26034)",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

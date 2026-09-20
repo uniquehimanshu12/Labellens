@@ -1,0 +1,121 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    font-family: 'Inter', 'Public Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+  
+  code, kbd, samp, pre, .font-mono {
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+}
+
+@page {
+  size: A4 portrait;
+  margin: 12mm 12mm 14mm 12mm;
+}
+
+@media print {
+  *, *::before, *::after {
+    box-shadow: none !important;
+    text-shadow: none !important;
+  }
+
+  html, body {
+    background-color: #ffffff !important;
+    background: #ffffff !important;
+    color: #0f172a !important;
+    font-size: 10pt !important;
+    line-height: 1.35 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  /* Universal print hide */
+  .no-print,
+  header,
+  nav,
+  aside,
+  button,
+  .btn-action,
+  #app-sidebar,
+  #app-topbar,
+  .modal-backdrop,
+  [role="dialog"],
+  .toast-container,
+  #command-palette,
+  #notification-center {
+    display: none !important;
+  }
+
+  .print-only {
+    display: block !important;
+  }
+
+  /* Page break rules */
+  .print-break-inside-avoid,
+  .avoid-break,
+  .report-section-card,
+  .report-table-row,
+  .report-image-card,
+  .report-signature-card,
+  .report-summary-grid,
+  section,
+  table tr {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
+  .print-break-before {
+    break-before: page !important;
+    page-break-before: always !important;
+  }
+
+  /* High contrast table styling */
+  table {
+    border-collapse: collapse !important;
+    width: 100% !important;
+    background: transparent !important;
+  }
+
+  th, td {
+    border-color: #cbd5e1 !important;
+    color: #0f172a !important;
+  }
+
+  /* Print document container */
+  #official-inspection-report {
+    background: #ffffff !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    max-width: 100% !important;
+    color: #0f172a !important;
+  }
+
+  /* Text color resets for high contrast printing */
+  .text-white,
+  .text-slate-100,
+  .text-slate-200,
+  .text-slate-300 {
+    color: #0f172a !important;
+  }
+
+  .text-slate-400,
+  .text-slate-500 {
+    color: #475569 !important;
+  }
+
+  .bg-[#151025],
+  .bg-[#1C1630],
+  .bg-[#241B3E],
+  .bg-[#0D0917],
+  .bg-[#090610] {
+    background-color: #ffffff !important;
+    border-color: #e2e8f0 !important;
+  }
+}
