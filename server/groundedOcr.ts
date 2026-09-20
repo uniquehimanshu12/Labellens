@@ -814,14 +814,20 @@ export async function executeGroundedPipeline(
     const imageTokens: OcrTokenData[] = [];
     const imageLines: OcrLineData[] = [];
 
-    try {
-      const ocrResult = await worker.recognize(
-        ocrBuffer,
-        {},
-        { blocks: true }
-      );
+try {
+  const ocrStartTime = Date.now();
 
-      for (const block of ocrResult.data.blocks || []) {
+  const ocrResult = await worker.recognize(
+    ocrBuffer,
+    {},
+    { blocks: true }
+  );
+
+  console.log(
+    `[LabelLens] Tesseract OCR for ${img.id}: ${Date.now() - ocrStartTime} ms`
+  );
+
+  for (const block of ocrResult.data.blocks || []) {
         for (const para of block.paragraphs || []) {
           for (const line of para.lines || []) {
             const lineTokenIds: string[] = [];
