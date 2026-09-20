@@ -554,6 +554,8 @@ export function matchFieldValueToOcrTokens(
 
 // Rebuilt grounded extraction pipeline:
 // IMAGE -> OCR (Exact Word/Line Pixel Boxes) -> GEMINI (Field Values Only) -> MATCH VALUE TO OCR -> UNION EVIDENCE BOX
+// Rebuilt grounded extraction pipeline:
+// IMAGE -> FAST OCR -> GEMINI (Field Values Only) -> MATCH VALUE TO OCR -> UNION EVIDENCE BOX
 export async function executeGroundedPipeline(
   rawInput:
     | NormalizedInputImage[]
@@ -582,13 +584,24 @@ export async function executeGroundedPipeline(
     const candidateImages = (rawInput as any).images || rawInput;
     const candidateRecords = (rawInput as any).imageRecords || {};
 
-    const sides: Array<"front" | "back" | "side" | "additional"> = ["front", "back", "side", "additional"];
+    const sides: Array<"front" | "back" | "side" | "additional"> = [
+      "front",
+      "back",
+      "side",
+      "additional",
+    ];
+
     for (const side of sides) {
       const dataUrl = candidateImages[side];
+
       if (dataUrl && typeof dataUrl === "string") {
         const record = candidateRecords[side];
+
         normalizedImages.push({
-          id: record?.id || record?.imageId || `img_${side}_${Date.now()}`,
+          id:
+            record?.id ||
+            record?.imageId ||
+            `img_${side}_${Date.now()}`,
           side,
           fileName: record?.fileName || `${side}_surface.png`,
           mimeType: record?.mimeType || "image/png",
@@ -613,17 +626,23 @@ export async function executeGroundedPipeline(
     };
   }
 
-  // 2. STAGE 1: OCR ENGINE (SOLE SOURCE OF TRUTH FOR EVIDENCE RECTANGLES)
+  // 2. STAGE 1: OCR ENGINE
   let worker: Worker;
+
   try {
     worker = await getTesseractWorker();
   } catch (workerErr) {
-    console.error("Failed to initialize Tesseract worker:", workerErr);
+    console.error(
+      "Failed to initialize Tesseract worker:",
+      workerErr
+    );
+
     return {
       status: 503,
       body: {
         success: false,
-        error: "OCR engine unavailable: Tesseract initialization failed.",
+        error:
+          "OCR engine unavailable: Tesseract initialization failed.",
         allowManualEntry: true,
       },
     };
@@ -633,17 +652,35 @@ export async function executeGroundedPipeline(
   const allOcrTokens: OcrTokenData[] = [];
   const tokensByImage = new Map<string, OcrTokenData[]>();
   const linesByImage = new Map<string, OcrLineData[]>();
+
   const geminiImageParts: any[] = [];
+
   let tokenCounter = 1;
   let lineCounter = 1;
 
+  /*
+   * PERFORMANCE OPTIMIZATION
+   *
+   * Tesseract does not need a 4K/5K photograph to read package text.
+   * We create a smaller OCR image, but keep the ORIGINAL dimensions.
+   *
+   * OCR coordinates are scaled back to the original image dimensions.
+   * Therefore the evidence boxes remain compatible with the original
+   * image displayed by the frontend.
+   */
+  const OCR_MAX_DIMENSION = 1800;
+
   for (const img of normalizedImages) {
     const parsed = await parseImageDataUrl(img.dataUrl);
+
     if (!parsed) continue;
 
     const sourceSide = (
       img.side.charAt(0).toUpperCase() + img.side.slice(1)
     ) as "Front" | "Back" | "Side" | "Additional";
+
+    const originalWidth = parsed.width;
+    const originalHeight = parsed.height;
 
     const meta: ImageMetaData = {
       id: img.id,
@@ -652,30 +689,138 @@ export async function executeGroundedPipeline(
       sourceSide,
       fileName: img.fileName,
       mimeType: parsed.mimeType,
-      width: parsed.width,
-      height: parsed.height,
+      width: originalWidth,
+      height: originalHeight,
       dataUrl: img.dataUrl,
     };
+
     imageMetadataList.push(meta);
 
-    // Multimodal input for Gemini
-    const base64Data = parsed.buffer.toString("base64");
+    /*
+     * Gemini receives a compressed/resized image too.
+     * This reduces upload and model processing time while preserving
+     * enough resolution for package-label extraction.
+     */
+    let geminiBuffer = parsed.buffer;
+
+    try {
+      const geminiScale =
+        Math.max(originalWidth, originalHeight) >
+        OCR_MAX_DIMENSION
+          ? OCR_MAX_DIMENSION / Math.max(originalWidth, originalHeight)
+          : 1;
+
+      if (geminiScale < 1) {
+        const geminiWidth = Math.max(
+          1,
+          Math.round(originalWidth * geminiScale)
+        );
+
+        const geminiHeight = Math.max(
+          1,
+          Math.round(originalHeight * geminiScale)
+        );
+
+        geminiBuffer = await sharp(parsed.buffer)
+          .resize(geminiWidth, geminiHeight, {
+            fit: "inside",
+            withoutEnlargement: true,
+          })
+          .jpeg({
+            quality: 82,
+            mozjpeg: true,
+          })
+          .toBuffer();
+      } else {
+        geminiBuffer = await sharp(parsed.buffer)
+          .jpeg({
+            quality: 82,
+            mozjpeg: true,
+          })
+          .toBuffer();
+      }
+    } catch (imageOptimizeErr) {
+      console.warn(
+        `Image optimization failed for ${img.id}; using original image.`,
+        imageOptimizeErr
+      );
+
+      geminiBuffer = parsed.buffer;
+    }
+
     geminiImageParts.push({
       inlineData: {
-        mimeType: "image/png",
-        data: base64Data,
+        mimeType: "image/jpeg",
+        data: geminiBuffer.toString("base64"),
       },
     });
+
     geminiImageParts.push({
-      text: `Surface [${sourceSide.toUpperCase()}] of the package with imageId: "${img.id}". Exact dimensions: ${parsed.width}x${parsed.height} pixels.`,
+      text: `Surface [${sourceSide.toUpperCase()}] of the package with imageId: "${img.id}". Exact original dimensions: ${originalWidth}x${originalHeight} pixels.`,
     });
+
+    /*
+     * FAST OCR IMAGE
+     *
+     * Resize only when the original photograph is larger than
+     * OCR_MAX_DIMENSION.
+     */
+    let ocrBuffer = parsed.buffer;
+    let ocrWidth = originalWidth;
+    let ocrHeight = originalHeight;
+
+    try {
+      const maxOriginalDimension = Math.max(
+        originalWidth,
+        originalHeight
+      );
+
+      if (maxOriginalDimension > OCR_MAX_DIMENSION) {
+        const scale =
+          OCR_MAX_DIMENSION / maxOriginalDimension;
+
+        ocrWidth = Math.max(
+          1,
+          Math.round(originalWidth * scale)
+        );
+
+        ocrHeight = Math.max(
+          1,
+          Math.round(originalHeight * scale)
+        );
+
+        ocrBuffer = await sharp(parsed.buffer)
+          .resize(ocrWidth, ocrHeight, {
+            fit: "inside",
+            withoutEnlargement: true,
+          })
+          .png()
+          .toBuffer();
+      }
+    } catch (resizeErr) {
+      console.warn(
+        `OCR resize failed for ${img.id}; using original image.`,
+        resizeErr
+      );
+
+      ocrBuffer = parsed.buffer;
+      ocrWidth = originalWidth;
+      ocrHeight = originalHeight;
+    }
+
+    const scaleX = originalWidth / ocrWidth;
+    const scaleY = originalHeight / ocrHeight;
 
     const imageTokens: OcrTokenData[] = [];
     const imageLines: OcrLineData[] = [];
 
-    // Run Tesseract on PNG buffer
     try {
-      const ocrResult = await worker.recognize(parsed.buffer, {}, { blocks: true });
+      const ocrResult = await worker.recognize(
+        ocrBuffer,
+        {},
+        { blocks: true }
+      );
+
       for (const block of ocrResult.data.blocks || []) {
         for (const para of block.paragraphs || []) {
           for (const line of para.lines || []) {
@@ -684,20 +829,57 @@ export async function executeGroundedPipeline(
 
             for (const word of line.words || []) {
               const text = (word.text || "").trim();
+
               if (!text) continue;
 
-              const x = Math.max(0, Math.round(word.bbox.x0));
-              const y = Math.max(0, Math.round(word.bbox.y0));
-              const width = Math.max(1, Math.round(word.bbox.x1 - word.bbox.x0));
-              const height = Math.max(1, Math.round(word.bbox.y1 - word.bbox.y0));
+              /*
+               * Tesseract coordinates are from the resized OCR image.
+               * Convert them back to ORIGINAL image coordinates.
+               */
+              const x = Math.max(
+                0,
+                Math.round(word.bbox.x0 * scaleX)
+              );
+
+              const y = Math.max(
+                0,
+                Math.round(word.bbox.y0 * scaleY)
+              );
+
+              const width = Math.max(
+                1,
+                Math.round(
+                  (word.bbox.x1 - word.bbox.x0) * scaleX
+                )
+              );
+
+              const height = Math.max(
+                1,
+                Math.round(
+                  (word.bbox.y1 - word.bbox.y0) * scaleY
+                )
+              );
 
               const token: OcrTokenData = {
-                id: `ocr_${String(tokenCounter++).padStart(3, "0")}`,
+                id: `ocr_${String(tokenCounter++).padStart(
+                  3,
+                  "0"
+                )}`,
                 imageId: img.id,
                 sourceSide,
                 text,
-                confidence: Number(((word.confidence || 85) / 100).toFixed(2)),
-                bbox: { x, y, width, height },
+                confidence: Number(
+                  (
+                    (word.confidence || 85) /
+                    100
+                  ).toFixed(2)
+                ),
+                bbox: {
+                  x,
+                  y,
+                  width,
+                  height,
+                },
                 lineIndex: lineCounter,
               };
 
@@ -706,18 +888,49 @@ export async function executeGroundedPipeline(
               lineTokenIds.push(token.id);
             }
 
-            if (lineText && lineTokenIds.length > 0) {
-              const lx = Math.max(0, Math.round(line.bbox.x0));
-              const ly = Math.max(0, Math.round(line.bbox.y0));
-              const lw = Math.max(1, Math.round(line.bbox.x1 - line.bbox.x0));
-              const lh = Math.max(1, Math.round(line.bbox.y1 - line.bbox.y0));
+            if (
+              lineText &&
+              lineTokenIds.length > 0
+            ) {
+              const lx = Math.max(
+                0,
+                Math.round(line.bbox.x0 * scaleX)
+              );
+
+              const ly = Math.max(
+                0,
+                Math.round(line.bbox.y0 * scaleY)
+              );
+
+              const lw = Math.max(
+                1,
+                Math.round(
+                  (line.bbox.x1 - line.bbox.x0) *
+                    scaleX
+                )
+              );
+
+              const lh = Math.max(
+                1,
+                Math.round(
+                  (line.bbox.y1 - line.bbox.y0) *
+                    scaleY
+                )
+              );
 
               imageLines.push({
-                id: `line_${String(lineCounter++).padStart(3, "0")}`,
+                id: `line_${String(
+                  lineCounter++
+                ).padStart(3, "0")}`,
                 imageId: img.id,
                 sourceSide,
                 text: lineText,
-                bbox: { x: lx, y: ly, width: lw, height: lh },
+                bbox: {
+                  x: lx,
+                  y: ly,
+                  width: lw,
+                  height: lh,
+                },
                 tokenIds: lineTokenIds,
               });
             }
@@ -725,7 +938,10 @@ export async function executeGroundedPipeline(
         }
       }
     } catch (ocrErr) {
-      console.error(`Tesseract OCR failed on image [${img.id}]:`, ocrErr);
+      console.error(
+        `Tesseract OCR failed on image [${img.id}]:`,
+        ocrErr
+      );
     }
 
     tokensByImage.set(img.id, imageTokens);
@@ -734,11 +950,16 @@ export async function executeGroundedPipeline(
 
   // Helper to build default empty field structure
   const buildEmptyFields = () => {
-    const fieldsByKey: Record<string, GroundedFieldResult> = {};
+    const fieldsByKey: Record<
+      string,
+      GroundedFieldResult
+    > = {};
+
     const fieldsList: GroundedFieldResult[] = [];
 
     for (const key of STATUTORY_FIELD_KEYS) {
       const label = getFieldLabel(key);
+
       const aliasKey =
         key === "manufacturerAddress"
           ? "address"
@@ -764,86 +985,176 @@ export async function executeGroundedPipeline(
         isManuallyVerified: false,
         isNotVisible: true,
         evidenceSnippet: undefined,
-        locationDescription: "Exact evidence location unavailable.",
+        locationDescription:
+          "Exact evidence location unavailable.",
       };
 
       fieldsByKey[aliasKey] = emptyField;
       fieldsList.push(emptyField);
     }
 
-    return { fieldsByKey, fieldsList };
+    return {
+      fieldsByKey,
+      fieldsList,
+    };
   };
 
-  // 3. STAGE 2: GEMINI EXTRACTS FIELD VALUES ONLY (DOES NOT DETERMINE EVIDENCE COORDINATES)
+  // 3. STAGE 2: GEMINI EXTRACTS FIELD VALUES ONLY
   let rawGeminiValues: Record<string, any> = {};
   let modelUsed = "gemini-3.5-flash-lite";
 
   if (client) {
-    const geminiExtractionPrompt = `You are an expert Legal Metrology Packaged Commodities inspector.
-Analyze the submitted package image surfaces and extract the mandatory statutory declarations.
+    const geminiExtractionPrompt = `
+You are an expert Legal Metrology Packaged Commodities inspector.
+
+Analyze ALL submitted package image surfaces and extract the mandatory statutory declarations.
 
 CRITICAL INSTRUCTIONS:
 - You ONLY extract the text values for each statutory field.
-- Do NOT provide bounding box coordinates or spatial guesses.
-- If a field is not visibly present on the package, set value to null and status to "NOT_DETECTED".
-- Extract exact values without inventing or halluncinating.
+- Do NOT provide bounding box coordinates.
+- Do NOT provide spatial guesses.
+- Do NOT invent text.
+- Use only text visibly present on the submitted package images.
+- If a field is not visibly present, set value to null and status to "NOT_DETECTED".
+- Preserve the exact visible value as much as possible.
+- You may combine information from multiple submitted surfaces.
+- Do not assume a declaration exists merely because it is legally expected.
 
 Return ONLY a JSON object with this exact structure:
+
 {
-  "productName": { "value": string | null, "status": "DETECTED" | "NOT_DETECTED" },
-  "brandName": { "value": string | null, "status": "DETECTED" | "NOT_DETECTED" },
-  "mrp": { "value": string | null, "status": "DETECTED" | "NOT_DETECTED" },
-  "netQuantity": { "value": string | null, "status": "DETECTED" | "NOT_DETECTED" },
-  "manufacturer": { "value": string | null, "status": "DETECTED" | "NOT_DETECTED" },
-  "manufacturerAddress": { "value": string | null, "status": "DETECTED" | "NOT_DETECTED" },
-  "batchNumber": { "value": string | null, "status": "DETECTED" | "NOT_DETECTED" },
-  "manufacturingDate": { "value": string | null, "status": "DETECTED" | "NOT_DETECTED" },
-  "bestBefore": { "value": string | null, "status": "DETECTED" | "NOT_DETECTED" },
-  "consumerCare": { "value": string | null, "status": "DETECTED" | "NOT_DETECTED" },
-  "countryOfOrigin": { "value": string | null, "status": "DETECTED" | "NOT_DETECTED" }
-}`;
+  "productName": {
+    "value": string | null,
+    "status": "DETECTED" | "NOT_DETECTED"
+  },
+  "brandName": {
+    "value": string | null,
+    "status": "DETECTED" | "NOT_DETECTED"
+  },
+  "mrp": {
+    "value": string | null,
+    "status": "DETECTED" | "NOT_DETECTED"
+  },
+  "netQuantity": {
+    "value": string | null,
+    "status": "DETECTED" | "NOT_DETECTED"
+  },
+  "manufacturer": {
+    "value": string | null,
+    "status": "DETECTED" | "NOT_DETECTED"
+  },
+  "manufacturerAddress": {
+    "value": string | null,
+    "status": "DETECTED" | "NOT_DETECTED"
+  },
+  "batchNumber": {
+    "value": string | null,
+    "status": "DETECTED" | "NOT_DETECTED"
+  },
+  "manufacturingDate": {
+    "value": string | null,
+    "status": "DETECTED" | "NOT_DETECTED"
+  },
+  "bestBefore": {
+    "value": string | null,
+    "status": "DETECTED" | "NOT_DETECTED"
+  },
+  "consumerCare": {
+    "value": string | null,
+    "status": "DETECTED" | "NOT_DETECTED"
+  },
+  "countryOfOrigin": {
+    "value": string | null,
+    "status": "DETECTED" | "NOT_DETECTED"
+  }
+}
+`;
 
     try {
       const res = await client.models.generateContent({
         model: "gemini-3.5-flash-lite",
-        contents: [...geminiImageParts, { text: geminiExtractionPrompt }],
+        contents: [
+          ...geminiImageParts,
+          {
+            text: geminiExtractionPrompt,
+          },
+        ],
         config: {
           responseMimeType: "application/json",
           temperature: 0.0,
         },
       });
+
       const text = res.text || "{}";
-      rawGeminiValues = JSON.parse(text.replace(/```json/g, "").replace(/```/g, "").trim());
+
+      rawGeminiValues = JSON.parse(
+        text
+          .replace(/```json/g, "")
+          .replace(/```/g, "")
+          .trim()
+      );
     } catch (err: any) {
-      console.warn("Primary gemini-3.5-flash-lite error, trying gemini-3.6-flash:", err?.message);
+      console.warn(
+        "Primary gemini-3.5-flash-lite error, trying gemini-3.6-flash:",
+        err?.message
+      );
+
       try {
         modelUsed = "gemini-3.6-flash";
-        const res = await client.models.generateContent({
-          model: "gemini-3.6-flash",
-          contents: [...geminiImageParts, { text: geminiExtractionPrompt }],
-          config: {
-            responseMimeType: "application/json",
-            temperature: 0.0,
-          },
-        });
+
+        const res =
+          await client.models.generateContent({
+            model: "gemini-3.6-flash",
+            contents: [
+              ...geminiImageParts,
+              {
+                text: geminiExtractionPrompt,
+              },
+            ],
+            config: {
+              responseMimeType: "application/json",
+              temperature: 0.0,
+            },
+          });
+
         const text = res.text || "{}";
-        rawGeminiValues = JSON.parse(text.replace(/```json/g, "").replace(/```/g, "").trim());
+
+        rawGeminiValues = JSON.parse(
+          text
+            .replace(/```json/g, "")
+            .replace(/```/g, "")
+            .trim()
+        );
       } catch (fallbackErr: any) {
-        console.error("Gemini classification failed completely:", fallbackErr);
+        console.error(
+          "Gemini classification failed completely:",
+          fallbackErr
+        );
       }
     }
   }
 
-  // 4. STAGE 3: MATCH EXTRACTED FIELD VALUE TO OCR TEXT ACROSS ALL SURFACES -> GENERATE EVIDENCE BOX
-  const processedFieldsByKey: Record<string, GroundedFieldResult> = {};
+  // 4. STAGE 3: MATCH GEMINI VALUES TO OCR
+  const processedFieldsByKey: Record<
+    string,
+    GroundedFieldResult
+  > = {};
+
   const processedFieldsList: GroundedFieldResult[] = [];
 
   for (const fieldKey of STATUTORY_FIELD_KEYS) {
     const raw = rawGeminiValues[fieldKey];
-    const val = raw?.value ? String(raw.value).trim() : "";
-    const isDetected = Boolean(val) && raw?.status !== "NOT_DETECTED";
+
+    const val = raw?.value
+      ? String(raw.value).trim()
+      : "";
+
+    const isDetected =
+      Boolean(val) &&
+      raw?.status !== "NOT_DETECTED";
 
     const label = getFieldLabel(fieldKey);
+
     const aliasKey =
       fieldKey === "manufacturerAddress"
         ? "address"
@@ -852,27 +1163,37 @@ Return ONLY a JSON object with this exact structure:
         : fieldKey;
 
     if (isDetected) {
-      // Search OCR results across Front, Back, Side, Additional
-      const ocrMatch = matchFieldValueToOcrTokens(
-        aliasKey,
-        val,
-        imageMetadataList,
-        tokensByImage,
-        linesByImage
-      );
+      const ocrMatch =
+        matchFieldValueToOcrTokens(
+          aliasKey,
+          val,
+          imageMetadataList,
+          tokensByImage,
+          linesByImage
+        );
 
       if (ocrMatch) {
-        const { matchedImage, matchedTokens, unionBbox } = ocrMatch;
-        const sourceSide = matchedImage.sourceSide;
-        const tokenIds = matchedTokens.map((t) => t.id);
+        const {
+          matchedImage,
+          matchedTokens,
+          unionBbox,
+        } = ocrMatch;
+
+        const sourceSide =
+          matchedImage.sourceSide;
+
+        const tokenIds =
+          matchedTokens.map((t) => t.id);
 
         const evidenceBox: EvidenceBoxData = {
           x: unionBbox.x,
           y: unionBbox.y,
           width: unionBbox.width,
           height: unionBbox.height,
-          originalWidth: matchedImage.width,
-          originalHeight: matchedImage.height,
+          originalWidth:
+            matchedImage.width,
+          originalHeight:
+            matchedImage.height,
           imageId: matchedImage.id,
           sourceSide,
           sourceTokenIds: tokenIds,
@@ -888,19 +1209,43 @@ Return ONLY a JSON object with this exact structure:
         const evidenceRegions = [
           {
             id: `ev_${aliasKey}_${matchedImage.id}`,
-            sourceImageId: matchedImage.id,
+            sourceImageId:
+              matchedImage.id,
             sourceSide,
-            x: Number((unionBbox.x / matchedImage.width).toFixed(4)),
-            y: Number((unionBbox.y / matchedImage.height).toFixed(4)),
-            width: Number((unionBbox.width / matchedImage.width).toFixed(4)),
-            height: Number((unionBbox.height / matchedImage.height).toFixed(4)),
+            x: Number(
+              (
+                unionBbox.x /
+                matchedImage.width
+              ).toFixed(4)
+            ),
+            y: Number(
+              (
+                unionBbox.y /
+                matchedImage.height
+              ).toFixed(4)
+            ),
+            width: Number(
+              (
+                unionBbox.width /
+                matchedImage.width
+              ).toFixed(4)
+            ),
+            height: Number(
+              (
+                unionBbox.height /
+                matchedImage.height
+              ).toFixed(4)
+            ),
             pixelBbox: {
               x: unionBbox.x,
               y: unionBbox.y,
               width: unionBbox.width,
               height: unionBbox.height,
             },
-            snippet: matchedTokens.map((t) => t.text).join(" ") || val,
+            snippet:
+              matchedTokens
+                .map((t) => t.text)
+                .join(" ") || val,
             confidence: "HIGH" as const,
           },
         ];
@@ -913,35 +1258,47 @@ Return ONLY a JSON object with this exact structure:
           value: val,
           status: "DETECTED",
           confidenceLevel: "HIGH",
-          confidenceState: "HIGH CONFIDENCE",
+          confidenceState:
+            "HIGH CONFIDENCE",
           confidence: 95,
           sourceTokenIds: tokenIds,
           evidenceTokenIds: tokenIds,
           evidenceBox,
           evidence: evidenceRegions,
-          sourceImageId: matchedImage.id,
+          sourceImageId:
+            matchedImage.id,
           sourceImage: sourceSide,
           isManuallyVerified: false,
           isNotVisible: false,
-          evidenceSnippet: matchedTokens.map((t) => t.text).join(" ") || val,
-          locationDescription: `X:${unionBbox.x}px Y:${unionBbox.y}px on ${sourceSide} surface`,
+          evidenceSnippet:
+            matchedTokens
+              .map((t) => t.text)
+              .join(" ") || val,
+          locationDescription:
+            `X:${unionBbox.x}px Y:${unionBbox.y}px on ${sourceSide} surface`,
         };
 
-        processedFieldsByKey[aliasKey] = fieldResult;
-        processedFieldsList.push(fieldResult);
+        processedFieldsByKey[
+          aliasKey
+        ] = fieldResult;
+
+        processedFieldsList.push(
+          fieldResult
+        );
+
         continue;
       } else {
-        // Value extracted by Gemini but NO reliable OCR text match on any surface:
-        // RULE 8 & 13: DO NOT DRAW A BOX. Show: "Exact evidence location unavailable."
         const noBoxField: GroundedFieldResult = {
           key: aliasKey,
           label,
           extractedValue: val,
           verifiedValue: val,
           value: val,
-          status: "NEEDS_MANUAL_VERIFICATION",
+          status:
+            "NEEDS_MANUAL_VERIFICATION",
           confidenceLevel: "MEDIUM",
-          confidenceState: "MEDIUM CONFIDENCE",
+          confidenceState:
+            "MEDIUM CONFIDENCE",
           confidence: 70,
           sourceTokenIds: [],
           evidenceTokenIds: [],
@@ -952,16 +1309,22 @@ Return ONLY a JSON object with this exact structure:
           isManuallyVerified: false,
           isNotVisible: false,
           evidenceSnippet: val,
-          locationDescription: "Exact evidence location unavailable — manual verification required.",
+          locationDescription:
+            "Exact evidence location unavailable — manual verification required.",
         };
 
-        processedFieldsByKey[aliasKey] = noBoxField;
-        processedFieldsList.push(noBoxField);
+        processedFieldsByKey[
+          aliasKey
+        ] = noBoxField;
+
+        processedFieldsList.push(
+          noBoxField
+        );
+
         continue;
       }
     }
 
-    // Not detected
     const notDetectedField: GroundedFieldResult = {
       key: aliasKey,
       label,
@@ -981,25 +1344,33 @@ Return ONLY a JSON object with this exact structure:
       isManuallyVerified: false,
       isNotVisible: true,
       evidenceSnippet: undefined,
-      locationDescription: "Exact evidence location unavailable.",
+      locationDescription:
+        "Exact evidence location unavailable.",
     };
 
-    processedFieldsByKey[aliasKey] = notDetectedField;
-    processedFieldsList.push(notDetectedField);
+    processedFieldsByKey[
+      aliasKey
+    ] = notDetectedField;
+
+    processedFieldsList.push(
+      notDetectedField
+    );
   }
 
-  // Format detectedTexts for frontend viewer
-  const detectedTexts = allOcrTokens.map((t) => ({
-    id: t.id,
-    text: t.text,
-    sourceImageId: t.imageId,
-    sourceSide: t.sourceSide,
-    x: t.bbox.x,
-    y: t.bbox.y,
-    width: t.bbox.width,
-    height: t.bbox.height,
-    pixelBbox: t.bbox,
-  }));
+  // Format OCR text for frontend viewer
+  const detectedTexts = allOcrTokens.map(
+    (t) => ({
+      id: t.id,
+      text: t.text,
+      sourceImageId: t.imageId,
+      sourceSide: t.sourceSide,
+      x: t.bbox.x,
+      y: t.bbox.y,
+      width: t.bbox.width,
+      height: t.bbox.height,
+      pixelBbox: t.bbox,
+    })
+  );
 
   return {
     status: 200,
