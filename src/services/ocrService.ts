@@ -1,4 +1,5 @@
 import {
+  const API_BASE_URL = 'https://labellens-api-bm1o.onrender.com';
   ExtractedField,
   PackageImages,
   ImageQualityWarning,
@@ -74,7 +75,7 @@ export const ocrService = {
 
     try {
       notify('Stage 3: Extracting visible text and coordinates directly from pixels...', 3);
-      const res = await fetch('/api/ocr/extract', {
+      const res = await fetch(`${API_BASE_URL}/api/ocr/extract`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -146,7 +147,7 @@ export const ocrService = {
     error?: string;
   }> {
     try {
-      const res = await fetch('/api/ocr/analyze-single-image', {
+      const res = await fetch(`${API_BASE_URL}/api/ocr/analyze-single-image`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
