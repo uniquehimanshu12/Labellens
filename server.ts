@@ -5,8 +5,8 @@ import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import { executeGroundedPipeline, runGoldenTest } from "./server/groundedOcr";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const currentFilePath = process.cwd();
+const currentDirPath = process.cwd();
 
 async function startServer() {
   const app = express();
