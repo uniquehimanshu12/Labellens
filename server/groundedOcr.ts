@@ -134,10 +134,15 @@ let ocrWorkerPromise: Promise<Worker> | null = null;
 
 export async function getTesseractWorker(): Promise<Worker> {
   if (!ocrWorkerPromise) {
-    ocrWorkerPromise = (async () => {
-      const worker = await createWorker("eng");
-      return worker;
-    })();
+  ocrWorkerPromise = (async () => {
+  console.log("[LabelLens] Initializing Tesseract worker...");
+
+  const worker = await createWorker("eng");
+
+  console.log("[LabelLens] Tesseract worker initialized successfully.");
+
+  return worker;
+})();
   }
 
   return ocrWorkerPromise;
