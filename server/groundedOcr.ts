@@ -2058,7 +2058,7 @@ console.log(
   > = {};
 
   let modelUsed =
-    "gemini-3.6-flash";
+    "gemini-3.5-flash-lite";
 
   let geminiSucceeded =
     false;
@@ -2162,13 +2162,13 @@ Use exactly this structure:
 
     try {
       console.log(
-        `[LabelLens] Starting primary Gemini extraction with gemini-3.6-flash`
+        `[LabelLens] Starting primary Gemini extraction with gemini-3.5-flash-lite`
       );
 
       const res =
         await generateGeminiWithRetry(
           client,
-          "gemini-3.6-flash",
+          "gemini-3.5-flash-lite",
           geminiContents,
           3
         );
@@ -2196,7 +2196,7 @@ Use exactly this structure:
 
       geminiSucceeded = true;
       modelUsed =
-        "gemini-3.6-flash";
+        "gemini-3.5-flash-lite";
 
       console.log(
         `[LabelLens] Primary Gemini extraction succeeded.`
@@ -2216,13 +2216,13 @@ Use exactly this structure:
 
       try {
         console.log(
-          `[LabelLens] Switching to fallback gemini-3.5-flash`
+          `[LabelLens] Switching to fallback gemini-3.6-flash`
         );
 
         const res =
           await generateGeminiWithRetry(
             client,
-            "gemini-3.5-flash",
+            "gemini-3.6-flash",
             geminiContents,
             3
           );
@@ -2250,7 +2250,7 @@ Use exactly this structure:
 
         geminiSucceeded = true;
         modelUsed =
-          "gemini-3.5-flash";
+          "gemini-3.6-flash";
 
         console.log(
           `[LabelLens] Fallback Gemini extraction succeeded.`
