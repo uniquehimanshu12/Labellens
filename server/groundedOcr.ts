@@ -2058,7 +2058,7 @@ console.log(
   > = {};
 
   let modelUsed =
-    "gemini-2.5-flash";
+    "gemini-3.6-flash";
 
   let geminiSucceeded =
     false;
@@ -2162,13 +2162,13 @@ Use exactly this structure:
 
     try {
       console.log(
-        `[LabelLens] Starting primary Gemini extraction with gemini-2.5-flash`
+        `[LabelLens] Starting primary Gemini extraction with gemini-3.6-flash`
       );
 
       const res =
         await generateGeminiWithRetry(
           client,
-          "gemini-2.5-flash",
+          "gemini-3.6-flash",
           geminiContents,
           3
         );
@@ -2196,7 +2196,7 @@ Use exactly this structure:
 
       geminiSucceeded = true;
       modelUsed =
-        "gemini-2.5-flash";
+        "gemini-3.6-flash";
 
       console.log(
         `[LabelLens] Primary Gemini extraction succeeded.`
