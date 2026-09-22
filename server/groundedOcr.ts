@@ -1420,27 +1420,39 @@ export async function executeGroundedPipeline(
   // 2. TESSERACT OCR
   // ==========================================================
 
-  let worker: Worker;
+let worker: Worker | null = null;
 
-  try {
-    worker =
-      await getTesseractWorker();
-  } catch (workerErr) {
-    console.error(
-      "Failed to initialize Tesseract worker:",
-      workerErr
-    );
+try {
+  console.log(
+    "[LabelLens] Attempting optional Tesseract initialization..."
+  );
 
-    return {
-      status: 503,
-      body: {
-        success: false,
-        error:
-          "OCR engine unavailable: Tesseract initialization failed.",
-        allowManualEntry: true,
-      },
-    };
-  }
+  worker = await Promise.race([
+    getTesseractWorker(),
+    new Promise<Worker>((_, reject) =>
+      setTimeout(
+        () =>
+          reject(
+            new Error(
+              "Tesseract initialization timeout"
+            )
+          ),
+        10000
+      )
+    ),
+  ]);
+
+  console.log(
+    "[LabelLens] Tesseract worker initialized successfully."
+  );
+} catch (workerErr) {
+  console.warn(
+    "[LabelLens] Tesseract unavailable; continuing with Gemini-only extraction:",
+    workerErr
+  );
+
+  worker = null;
+}
 
   const imageMetadataList: ImageMetaData[] =
     [];
