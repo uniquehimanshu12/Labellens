@@ -1713,13 +1713,32 @@ export async function executeGroundedPipeline(
       const ocrStartTime =
         Date.now();
 
-      const ocrResult =
-        await worker.recognize(
-          ocrBuffer,
-          {},
-          { blocks: true }
-        );
+      console.log(
+  `[LabelLens] Starting Tesseract recognition for ${img.id}`
+);
 
+const ocrResult = await Promise.race([
+  worker.recognize(
+    ocrBuffer,
+    {},
+    { blocks: true }
+  ),
+  new Promise<never>((_, reject) =>
+    setTimeout(
+      () =>
+        reject(
+          new Error(
+            `Tesseract timeout after 30 seconds for ${img.id}`
+          )
+        ),
+      30000
+    )
+  ),
+]);
+
+console.log(
+  `[LabelLens] Tesseract recognition completed for ${img.id}`
+);
       console.log(
         `[LabelLens] Tesseract OCR for ${img.id}: ${
           Date.now() -
